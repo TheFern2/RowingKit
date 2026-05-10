@@ -25,12 +25,10 @@ public final class RowingCentral: NSObject, @unchecked Sendable {
 
     public override init() {
         super.init()
+        centralManager = CBCentralManager(delegate: self, queue: nil)
     }
 
     public func startScanning() {
-        if centralManager == nil {
-            centralManager = CBCentralManager(delegate: self, queue: nil)
-        }
         isScanning = true
         guard state == .poweredOn else { return }
         beginScan()
