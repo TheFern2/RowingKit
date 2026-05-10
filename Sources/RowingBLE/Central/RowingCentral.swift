@@ -174,14 +174,19 @@ extension RowingCentral: CBPeripheralDelegate {
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: (any Error)?) {
         guard let characteristics = service.characteristics else { return }
-        for characteristic in characteristics where characteristic.properties.contains(.notify) {
-            peripheral.setNotifyValue(true, for: characteristic)
+        print("[RowingCentral] Discovered \(characteristics.count) characteristics:")
+        for characteristic in characteristics {
+            print("[RowingCentral]   \(characteristic.uuid) properties: \(characteristic.properties.rawValue)")
+            if characteristic.properties.contains(.notify) {
+                peripheral.setNotifyValue(true, for: characteristic)
+            }
         }
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: (any Error)?) {
         guard let data = characteristic.value else { return }
         let uuid = characteristic.uuid
+        print("[RowingCentral] Received \(data.count) bytes from \(uuid)")
 
         let partial: RowingSnapshot
         if uuid == CBUUID(string: C2UUIDs.generalStatus) {
@@ -193,6 +198,7 @@ extension RowingCentral: CBPeripheralDelegate {
         } else if uuid == CBUUID(string: C2UUIDs.additionalStrokeData) {
             partial = C2AdditionalStrokeData.decode(data)
         } else {
+            print("[RowingCentral] Unknown characteristic, skipping")
             return
         }
         mergeSnapshot(partial)
