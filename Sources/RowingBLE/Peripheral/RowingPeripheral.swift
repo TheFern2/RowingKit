@@ -35,6 +35,7 @@ public final class RowingPeripheral: NSObject, @unchecked Sendable {
         peripheralManager?.stopAdvertising()
         peripheralManager?.removeAllServices()
         notifyCharacteristics.removeAll()
+        pendingUpdates.removeAll()
         subscribedCentrals = 0
     }
 
