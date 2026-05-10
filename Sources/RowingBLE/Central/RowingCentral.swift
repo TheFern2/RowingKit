@@ -43,10 +43,11 @@ public final class RowingCentral: NSObject, @unchecked Sendable {
 
     public func connect(to rower: DiscoveredRower) {
         guard let peripheral = discoveredPeripherals[rower.id] else { return }
-        stopScanning()
+        connectedPeripheral = peripheral
         connectionState = .connecting
         connectedProtocolType = rower.protocolType
         connectedRowerName = rower.name
+        stopScanning()
         centralManager?.connect(peripheral, options: nil)
     }
 
