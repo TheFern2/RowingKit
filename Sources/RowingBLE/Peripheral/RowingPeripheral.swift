@@ -12,6 +12,7 @@ public final class RowingPeripheral: NSObject, @unchecked Sendable {
     private var peripheralManager: CBPeripheralManager?
     private var notifyCharacteristics: [CBMutableCharacteristic] = []
     private var advertisingName: String = "ErgSim"
+    private var pendingUpdates: [(CBMutableCharacteristic, Data)] = []
 
     public init(protocolType: RowingProtocolType) {
         self.protocolType = protocolType
@@ -43,7 +44,19 @@ public final class RowingPeripheral: NSObject, @unchecked Sendable {
             let data = encodeForCharacteristic(characteristic, snapshot: snapshot)
             let sent = peripheralManager?.updateValue(data, for: characteristic, onSubscribedCentrals: nil) ?? false
             if !sent {
-                print("[Peripheral] Failed to send \(characteristic.uuid)")
+                pendingUpdates.append((characteristic, data))
+            }
+        }
+    }
+
+    private func drainPendingUpdates() {
+        while !pendingUpdates.isEmpty {
+            let (characteristic, data) = pendingUpdates[0]
+            let sent = peripheralManager?.updateValue(data, for: characteristic, onSubscribedCentrals: nil) ?? false
+            if sent {
+                pendingUpdates.removeFirst()
+            } else {
+                break
             }
         }
     }
@@ -88,6 +101,10 @@ extension RowingPeripheral: CBPeripheralManagerDelegate {
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
         subscribedCentrals = max(0, subscribedCentrals - 1)
+    }
+
+    public func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
+        drainPendingUpdates()
     }
 
     private func setupServices() {
