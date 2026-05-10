@@ -181,20 +181,16 @@ extension RowingCentral: CBPeripheralDelegate {
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: (any Error)?) {
         guard let data = characteristic.value else { return }
-        let uuid = characteristic.uuid.uuidString.uppercased()
-        let c2General = C2UUIDs.generalStatus.uppercased()
-        let c2Additional1 = C2UUIDs.additionalStatus1.uppercased()
-        let c2Stroke = C2UUIDs.strokeData.uppercased()
-        let c2AdditionalStroke = C2UUIDs.additionalStrokeData.uppercased()
+        let uuid = characteristic.uuid
 
         let partial: RowingSnapshot
-        if uuid == c2General {
+        if uuid == CBUUID(string: C2UUIDs.generalStatus) {
             partial = C2GeneralStatus.decode(data)
-        } else if uuid == c2Additional1 {
+        } else if uuid == CBUUID(string: C2UUIDs.additionalStatus1) {
             partial = C2AdditionalStatus1.decode(data)
-        } else if uuid == c2Stroke {
+        } else if uuid == CBUUID(string: C2UUIDs.strokeData) {
             partial = C2StrokeData.decode(data)
-        } else if uuid == c2AdditionalStroke {
+        } else if uuid == CBUUID(string: C2UUIDs.additionalStrokeData) {
             partial = C2AdditionalStrokeData.decode(data)
         } else {
             return
