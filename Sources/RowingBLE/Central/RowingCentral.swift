@@ -147,6 +147,9 @@ extension RowingCentral: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectedPeripheral = peripheral
+        if let name = peripheral.name, connectedRowerName == nil || connectedRowerName == "Unknown Rower" {
+            connectedRowerName = name
+        }
         connectionState = .connected
         peripheral.delegate = self
         peripheral.discoverServices([CBUUID(string: C2UUIDs.rowingService)])
