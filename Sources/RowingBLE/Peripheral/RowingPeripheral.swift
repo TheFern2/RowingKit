@@ -41,7 +41,10 @@ public final class RowingPeripheral: NSObject, @unchecked Sendable {
         guard isAdvertising, !notifyCharacteristics.isEmpty else { return }
         for characteristic in notifyCharacteristics {
             let data = encodeForCharacteristic(characteristic, snapshot: snapshot)
-            peripheralManager?.updateValue(data, for: characteristic, onSubscribedCentrals: nil)
+            let sent = peripheralManager?.updateValue(data, for: characteristic, onSubscribedCentrals: nil) ?? false
+            if !sent {
+                print("[Peripheral] Failed to send \(characteristic.uuid)")
+            }
         }
     }
 
