@@ -40,9 +40,10 @@ public final class RowingPeripheral: NSObject, @unchecked Sendable {
     }
 
     public func publish(snapshot: RowingSnapshot) {
-        guard isAdvertising, !notifyCharacteristics.isEmpty else { return }
+        guard isAdvertising, !notifyCharacteristics.isEmpty,
+              let handler = ProtocolRegistry.handler(for: protocolType) else { return }
         for characteristic in notifyCharacteristics {
-            let data = encodeForCharacteristic(characteristic, snapshot: snapshot)
+            let data = handler.encode(snapshot: snapshot, characteristicUUID: characteristic.uuid.uuidString)
             let sent = peripheralManager?.updateValue(data, for: characteristic, onSubscribedCentrals: nil) ?? false
             if !sent {
                 pendingUpdates.append((characteristic, data))
@@ -62,30 +63,6 @@ public final class RowingPeripheral: NSObject, @unchecked Sendable {
         }
     }
 
-    private func encodeForCharacteristic(_ characteristic: CBMutableCharacteristic, snapshot: RowingSnapshot) -> Data {
-        switch protocolType {
-        case .concept2:
-            return encodeC2(characteristic: characteristic, snapshot: snapshot)
-        case .ftms:
-            return FTMSRowerData.encode(snapshot)
-        case .watchCoreMotion:
-            return Data()
-        }
-    }
-
-    private func encodeC2(characteristic: CBMutableCharacteristic, snapshot: RowingSnapshot) -> Data {
-        let uuid = characteristic.uuid
-        if uuid == CBUUID(string: C2UUIDs.generalStatus) {
-            return C2GeneralStatus.encode(snapshot)
-        } else if uuid == CBUUID(string: C2UUIDs.additionalStatus1) {
-            return C2AdditionalStatus1.encode(snapshot)
-        } else if uuid == CBUUID(string: C2UUIDs.strokeData) {
-            return C2StrokeData.encode(snapshot)
-        } else if uuid == CBUUID(string: C2UUIDs.additionalStrokeData) {
-            return C2AdditionalStrokeData.encode(snapshot)
-        }
-        return Data()
-    }
 }
 
 extension RowingPeripheral: CBPeripheralManagerDelegate {
@@ -109,58 +86,32 @@ extension RowingPeripheral: CBPeripheralManagerDelegate {
     }
 
     private func setupServices() {
-        switch protocolType {
-        case .concept2:
-            setupC2Services()
-        case .ftms:
-            setupFTMSServices()
-        case .watchCoreMotion:
-            break
+        guard let handler = ProtocolRegistry.handler(for: protocolType) else { return }
+        let definition = handler.serviceDefinition
+
+        var allCharacteristics: [CBMutableCharacteristic] = []
+        var notify: [CBMutableCharacteristic] = []
+
+        for charDef in definition.characteristics {
+            let properties: CBCharacteristicProperties = charDef.isNotify ? .notify : .write
+            let permissions: CBAttributePermissions = charDef.isWritable ? .writeable : .readable
+            let characteristic = CBMutableCharacteristic(
+                type: CBUUID(string: charDef.uuid), properties: properties, value: nil, permissions: permissions
+            )
+            allCharacteristics.append(characteristic)
+            if charDef.isNotify {
+                notify.append(characteristic)
+            }
         }
-    }
 
-    private func setupC2Services() {
-        let generalStatus = CBMutableCharacteristic(
-            type: CBUUID(string: C2UUIDs.generalStatus), properties: .notify, value: nil, permissions: .readable
-        )
-        let additionalStatus1 = CBMutableCharacteristic(
-            type: CBUUID(string: C2UUIDs.additionalStatus1), properties: .notify, value: nil, permissions: .readable
-        )
-        let strokeData = CBMutableCharacteristic(
-            type: CBUUID(string: C2UUIDs.strokeData), properties: .notify, value: nil, permissions: .readable
-        )
-        let additionalStrokeData = CBMutableCharacteristic(
-            type: CBUUID(string: C2UUIDs.additionalStrokeData), properties: .notify, value: nil, permissions: .readable
-        )
-        let sampleRate = CBMutableCharacteristic(
-            type: CBUUID(string: C2UUIDs.sampleRate), properties: .write, value: nil, permissions: .writeable
-        )
+        notifyCharacteristics = notify
 
-        notifyCharacteristics = [generalStatus, additionalStatus1, strokeData, additionalStrokeData]
-
-        let service = CBMutableService(type: CBUUID(string: C2UUIDs.rowingService), primary: true)
-        service.characteristics = [generalStatus, additionalStatus1, strokeData, additionalStrokeData, sampleRate]
+        let service = CBMutableService(type: CBUUID(string: definition.serviceUUID), primary: true)
+        service.characteristics = allCharacteristics
         peripheralManager?.add(service)
 
         peripheralManager?.startAdvertising([
-            CBAdvertisementDataServiceUUIDsKey: [CBUUID(string: C2UUIDs.rowingService)],
-            CBAdvertisementDataLocalNameKey: advertisingName,
-        ])
-    }
-
-    private func setupFTMSServices() {
-        let rowerData = CBMutableCharacteristic(
-            type: CBUUID(string: FTMSUUIDs.rowerData), properties: .notify, value: nil, permissions: .readable
-        )
-
-        notifyCharacteristics = [rowerData]
-
-        let service = CBMutableService(type: CBUUID(string: FTMSUUIDs.fitnessMachineService), primary: true)
-        service.characteristics = [rowerData]
-        peripheralManager?.add(service)
-
-        peripheralManager?.startAdvertising([
-            CBAdvertisementDataServiceUUIDsKey: [CBUUID(string: FTMSUUIDs.fitnessMachineService)],
+            CBAdvertisementDataServiceUUIDsKey: [CBUUID(string: definition.serviceUUID)],
             CBAdvertisementDataLocalNameKey: advertisingName,
         ])
     }

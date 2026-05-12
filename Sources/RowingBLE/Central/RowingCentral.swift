@@ -77,10 +77,7 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
     }
 
     private func beginScan() {
-        let services = [
-            CBUUID(string: C2UUIDs.rowingService),
-            CBUUID(string: FTMSUUIDs.fitnessMachineService),
-        ]
+        let services = ProtocolRegistry.scanServiceUUIDs.map { CBUUID(string: $0) }
         centralManager?.scanForPeripherals(
             withServices: services,
             options: configuration.scanDuplicates
@@ -115,15 +112,10 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
     }
 
     private func discoverServicesForProtocol() {
-        guard let peripheral = connectedPeripheral, let proto = connectedProtocolType else { return }
-        switch proto {
-        case .concept2:
-            peripheral.discoverServices([CBUUID(string: C2UUIDs.rowingService)])
-        case .ftms:
-            peripheral.discoverServices([CBUUID(string: FTMSUUIDs.fitnessMachineService)])
-        case .watchCoreMotion:
-            break
-        }
+        guard let peripheral = connectedPeripheral,
+              let proto = connectedProtocolType,
+              let handler = ProtocolRegistry.handler(for: proto) else { return }
+        peripheral.discoverServices([CBUUID(string: handler.serviceUUID)])
     }
 
     private func mergeSnapshot(_ partial: RowingSnapshot) {
@@ -178,12 +170,10 @@ extension RowingCentral: CBCentralManagerDelegate {
         rssi RSSI: NSNumber
     ) {
         let serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
-        let protocolType: RowingProtocolType
-        if serviceUUIDs.contains(CBUUID(string: C2UUIDs.rowingService)) {
-            protocolType = .concept2
-        } else {
-            protocolType = .ftms
-        }
+        guard let handler = serviceUUIDs.lazy.compactMap({ uuid in
+            ProtocolRegistry.handler(forServiceUUID: uuid.uuidString)
+        }).first else { return }
+        let protocolType = handler.protocolType
 
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String
             ?? peripheral.name
@@ -241,32 +231,11 @@ extension RowingCentral: CBPeripheralDelegate {
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: (any Error)?) {
-        guard let data = characteristic.value else { return }
-        let uuid = characteristic.uuid
-
-        let partial: RowingSnapshot
-        switch connectedProtocolType {
-        case .concept2:
-            if uuid == CBUUID(string: C2UUIDs.generalStatus) {
-                partial = C2GeneralStatus.decode(data)
-            } else if uuid == CBUUID(string: C2UUIDs.additionalStatus1) {
-                partial = C2AdditionalStatus1.decode(data)
-            } else if uuid == CBUUID(string: C2UUIDs.strokeData) {
-                partial = C2StrokeData.decode(data)
-            } else if uuid == CBUUID(string: C2UUIDs.additionalStrokeData) {
-                partial = C2AdditionalStrokeData.decode(data)
-            } else {
-                return
-            }
-        case .ftms:
-            if uuid == CBUUID(string: FTMSUUIDs.rowerData) {
-                partial = FTMSRowerData.decode(data)
-            } else {
-                return
-            }
-        case .watchCoreMotion, .none:
-            return
-        }
+        guard let data = characteristic.value,
+              let proto = connectedProtocolType,
+              let handler = ProtocolRegistry.handler(for: proto),
+              let partial = handler.decode(characteristicUUID: characteristic.uuid.uuidString, data: data)
+        else { return }
         mergeSnapshot(partial)
     }
 }
