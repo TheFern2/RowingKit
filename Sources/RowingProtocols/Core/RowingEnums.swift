@@ -47,3 +47,17 @@ public enum ConnectionState: Sendable {
     case connected
     case disconnecting
 }
+
+public enum DeviceCategory: Sendable {
+    case erg
+    case hrm
+
+    public init(protocolType: RowingProtocolType) {
+        switch protocolType {
+        case .heartRateMonitor:
+            self = .hrm
+        default:
+            self = .erg
+        }
+    }
+}
