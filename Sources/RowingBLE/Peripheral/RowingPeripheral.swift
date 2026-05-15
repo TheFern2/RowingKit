@@ -7,15 +7,19 @@ public final class RowingPeripheral: NSObject, @unchecked Sendable {
     public private(set) var isAdvertising = false
     public private(set) var subscribedCentrals = 0
 
-    public let protocolType: RowingProtocolType
+    public let protocolTypes: [RowingProtocolType]
 
     private var peripheralManager: CBPeripheralManager?
-    private var notifyCharacteristics: [CBMutableCharacteristic] = []
+    private var characteristicsByProtocol: [RowingProtocolType: [CBMutableCharacteristic]] = [:]
     private var advertisingName: String = "ErgSim"
     private var pendingUpdates: [(CBMutableCharacteristic, Data)] = []
 
-    public init(protocolType: RowingProtocolType) {
-        self.protocolType = protocolType
+    public convenience init(protocolType: RowingProtocolType) {
+        self.init(protocolTypes: [protocolType])
+    }
+
+    public init(protocolTypes: [RowingProtocolType]) {
+        self.protocolTypes = protocolTypes
         super.init()
     }
 
@@ -34,15 +38,30 @@ public final class RowingPeripheral: NSObject, @unchecked Sendable {
         isAdvertising = false
         peripheralManager?.stopAdvertising()
         peripheralManager?.removeAllServices()
-        notifyCharacteristics.removeAll()
+        characteristicsByProtocol.removeAll()
         pendingUpdates.removeAll()
         subscribedCentrals = 0
     }
 
     public func publish(snapshot: RowingSnapshot) {
-        guard isAdvertising, !notifyCharacteristics.isEmpty,
+        guard isAdvertising, !characteristicsByProtocol.isEmpty else { return }
+        for (proto, characteristics) in characteristicsByProtocol {
+            guard let handler = ProtocolRegistry.handler(for: proto) else { continue }
+            for characteristic in characteristics {
+                let data = handler.encode(snapshot: snapshot, characteristicUUID: characteristic.uuid.uuidString)
+                let sent = peripheralManager?.updateValue(data, for: characteristic, onSubscribedCentrals: nil) ?? false
+                if !sent {
+                    pendingUpdates.append((characteristic, data))
+                }
+            }
+        }
+    }
+
+    public func publish(snapshot: RowingSnapshot, for protocolType: RowingProtocolType) {
+        guard isAdvertising,
+              let characteristics = characteristicsByProtocol[protocolType],
               let handler = ProtocolRegistry.handler(for: protocolType) else { return }
-        for characteristic in notifyCharacteristics {
+        for characteristic in characteristics {
             let data = handler.encode(snapshot: snapshot, characteristicUUID: characteristic.uuid.uuidString)
             let sent = peripheralManager?.updateValue(data, for: characteristic, onSubscribedCentrals: nil) ?? false
             if !sent {
@@ -86,32 +105,38 @@ extension RowingPeripheral: CBPeripheralManagerDelegate {
     }
 
     private func setupServices() {
-        guard let handler = ProtocolRegistry.handler(for: protocolType) else { return }
-        let definition = handler.serviceDefinition
+        var allServiceUUIDs: [CBUUID] = []
 
-        var allCharacteristics: [CBMutableCharacteristic] = []
-        var notify: [CBMutableCharacteristic] = []
+        for proto in protocolTypes {
+            guard let handler = ProtocolRegistry.handler(for: proto) else { continue }
+            let definition = handler.serviceDefinition
 
-        for charDef in definition.characteristics {
-            let properties: CBCharacteristicProperties = charDef.isNotify ? .notify : .write
-            let permissions: CBAttributePermissions = charDef.isWritable ? .writeable : .readable
-            let characteristic = CBMutableCharacteristic(
-                type: CBUUID(string: charDef.uuid), properties: properties, value: nil, permissions: permissions
-            )
-            allCharacteristics.append(characteristic)
-            if charDef.isNotify {
-                notify.append(characteristic)
+            var allCharacteristics: [CBMutableCharacteristic] = []
+            var notify: [CBMutableCharacteristic] = []
+
+            for charDef in definition.characteristics {
+                let properties: CBCharacteristicProperties = charDef.isNotify ? .notify : .write
+                let permissions: CBAttributePermissions = charDef.isWritable ? .writeable : .readable
+                let characteristic = CBMutableCharacteristic(
+                    type: CBUUID(string: charDef.uuid), properties: properties, value: nil, permissions: permissions
+                )
+                allCharacteristics.append(characteristic)
+                if charDef.isNotify {
+                    notify.append(characteristic)
+                }
             }
+
+            characteristicsByProtocol[proto] = notify
+
+            let service = CBMutableService(type: CBUUID(string: definition.serviceUUID), primary: true)
+            service.characteristics = allCharacteristics
+            peripheralManager?.add(service)
+
+            allServiceUUIDs.append(CBUUID(string: definition.serviceUUID))
         }
 
-        notifyCharacteristics = notify
-
-        let service = CBMutableService(type: CBUUID(string: definition.serviceUUID), primary: true)
-        service.characteristics = allCharacteristics
-        peripheralManager?.add(service)
-
         peripheralManager?.startAdvertising([
-            CBAdvertisementDataServiceUUIDsKey: [CBUUID(string: definition.serviceUUID)],
+            CBAdvertisementDataServiceUUIDsKey: allServiceUUIDs,
             CBAdvertisementDataLocalNameKey: advertisingName,
         ])
     }

@@ -22,6 +22,7 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
     public private(set) var connectedRowerName: String?
     public private(set) var connectedHRMName: String?
     public private(set) var latestSnapshot: RowingSnapshot?
+    public private(set) var latestHRMHeartRate: Int?
 
     public var snapshotStream: AsyncStream<RowingSnapshot> {
         AsyncStream { continuation in
@@ -128,6 +129,7 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
         connectedHRMPeripheral = nil
         connectedHRMProtocolType = nil
         connectedHRMName = nil
+        latestHRMHeartRate = nil
         hrmConnectionState = .disconnected
     }
 
@@ -170,7 +172,7 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
         if let v = partial.speed { pendingSnapshot.speed = v }
         if let v = partial.power { pendingSnapshot.power = v }
         if let v = partial.averagePower { pendingSnapshot.averagePower = v }
-        if let v = partial.heartRate, connectedHRMPeripheral == nil { pendingSnapshot.heartRate = v }
+        if let v = partial.heartRate { pendingSnapshot.heartRate = v }
         if let v = partial.calories { pendingSnapshot.calories = v }
         if let v = partial.caloriesPerHour { pendingSnapshot.caloriesPerHour = v }
         if let v = partial.caloriesPerMinute { pendingSnapshot.caloriesPerMinute = v }
@@ -303,11 +305,7 @@ extension RowingCentral: CBPeripheralDelegate {
                   let handler = ProtocolRegistry.handler(for: proto),
                   let partial = handler.decode(characteristicUUID: characteristic.uuid.uuidString, data: data)
             else { return }
-            if let hr = partial.heartRate {
-                pendingSnapshot.heartRate = hr
-                latestSnapshot = pendingSnapshot
-                snapshotContinuation?.yield(pendingSnapshot)
-            }
+            latestHRMHeartRate = partial.heartRate
         } else {
             guard let proto = connectedProtocolType,
                   let handler = ProtocolRegistry.handler(for: proto),

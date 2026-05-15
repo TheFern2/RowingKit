@@ -5,5 +5,6 @@ public protocol RowingDataProvider: AnyObject, Sendable {
     var connectionState: ConnectionState { get }
     var hrmConnectionState: ConnectionState { get }
     var latestSnapshot: RowingSnapshot? { get }
+    var latestHRMHeartRate: Int? { get }
     var snapshotStream: AsyncStream<RowingSnapshot> { get }
 }
