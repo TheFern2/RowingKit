@@ -25,13 +25,10 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
     public private(set) var latestSnapshot: RowingSnapshot?
     public private(set) var latestHRMHeartRate: Int?
 
-    public var snapshotStream: AsyncStream<RowingSnapshot> {
-        AsyncStream { continuation in
-            snapshotContinuation = continuation
-        }
-    }
+    public let snapshotStream: AsyncStream<RowingSnapshot>
 
     private let configuration: BLEConfiguration
+    private let snapshotContinuation: AsyncStream<RowingSnapshot>.Continuation
     private var centralManager: CBCentralManager?
     private var connectedPeripheral: CBPeripheral?
     private var connectedHRMPeripheral: CBPeripheral?
@@ -39,13 +36,15 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
     private var connectedProtocolType: RowingProtocolType?
     private var connectedHRMProtocolType: RowingProtocolType?
     private var pendingSnapshot = RowingSnapshot()
-    private var snapshotContinuation: AsyncStream<RowingSnapshot>.Continuation?
     private var connectionTimeoutTask: Task<Void, Never>?
     private var hrmConnectionTimeoutTask: Task<Void, Never>?
 
     public init(configuration: BLEConfiguration = .default) {
         self.id = UUID().uuidString
         self.configuration = configuration
+        let (stream, continuation) = AsyncStream<RowingSnapshot>.makeStream()
+        self.snapshotStream = stream
+        self.snapshotContinuation = continuation
         super.init()
         centralManager = CBCentralManager(delegate: self, queue: nil)
     }
@@ -71,8 +70,16 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
         protocolType = rower.protocolType
         connectedRowerName = rower.name
         displayName = rower.name
-        centralManager?.connect(peripheral, options: nil)
-        startConnectionTimeout()
+
+        if peripheral.identifier == connectedHRMPeripheral?.identifier, hrmConnectionState == .connected {
+            connectionState = .connected
+            if let proto = connectedProtocolType {
+                discoverServicesForPeripheral(peripheral, protocolType: proto)
+            }
+        } else {
+            centralManager?.connect(peripheral, options: nil)
+            startConnectionTimeout()
+        }
     }
 
     public func connectHRM(to rower: DiscoveredRower) {
@@ -81,14 +88,31 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
         hrmConnectionState = .connecting
         connectedHRMProtocolType = rower.protocolType
         connectedHRMName = rower.name
-        centralManager?.connect(peripheral, options: nil)
-        startHRMConnectionTimeout()
+
+        if peripheral.identifier == connectedPeripheral?.identifier, connectionState == .connected {
+            hrmConnectionState = .connected
+            if let proto = connectedHRMProtocolType {
+                discoverServicesForPeripheral(peripheral, protocolType: proto)
+            }
+        } else {
+            centralManager?.connect(peripheral, options: nil)
+            startHRMConnectionTimeout()
+        }
     }
 
     public func disconnectErg() {
         connectionTimeoutTask?.cancel()
         connectionTimeoutTask = nil
         guard let peripheral = connectedPeripheral else { return }
+
+        if peripheral.identifier == connectedHRMPeripheral?.identifier, hrmConnectionState == .connected {
+            if let proto = connectedProtocolType {
+                unsubscribeNotifications(from: peripheral, protocolType: proto)
+            }
+            resetErgConnection()
+            return
+        }
+
         connectionState = .disconnecting
         centralManager?.cancelPeripheralConnection(peripheral)
     }
@@ -97,6 +121,15 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
         hrmConnectionTimeoutTask?.cancel()
         hrmConnectionTimeoutTask = nil
         guard let peripheral = connectedHRMPeripheral else { return }
+
+        if peripheral.identifier == connectedPeripheral?.identifier, connectionState == .connected {
+            if let proto = connectedHRMProtocolType {
+                unsubscribeNotifications(from: peripheral, protocolType: proto)
+            }
+            resetHRMConnection()
+            return
+        }
+
         hrmConnectionState = .disconnecting
         centralManager?.cancelPeripheralConnection(peripheral)
     }
@@ -120,8 +153,6 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
         latestSnapshot = nil
         pendingSnapshot = RowingSnapshot()
         connectionState = .disconnected
-        snapshotContinuation?.finish()
-        snapshotContinuation = nil
     }
 
     private func resetHRMConnection() {
@@ -163,6 +194,19 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
         peripheral.discoverServices([CBUUID(string: handler.serviceUUID)])
     }
 
+    private func unsubscribeNotifications(from peripheral: CBPeripheral, protocolType: RowingProtocolType) {
+        guard let handler = ProtocolRegistry.handler(for: protocolType),
+              let services = peripheral.services
+        else { return }
+        let targetUUID = CBUUID(string: handler.serviceUUID)
+        for service in services where service.uuid == targetUUID {
+            guard let characteristics = service.characteristics else { continue }
+            for characteristic in characteristics where characteristic.isNotifying {
+                peripheral.setNotifyValue(false, for: characteristic)
+            }
+        }
+    }
+
     private func mergeSnapshot(_ partial: RowingSnapshot) {
         if let v = partial.elapsedTime { pendingSnapshot.elapsedTime = v }
         if let v = partial.distance { pendingSnapshot.distance = v }
@@ -196,7 +240,7 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
         if let v = partial.projectedWorkTime { pendingSnapshot.projectedWorkTime = v }
         if let v = partial.projectedWorkDistance { pendingSnapshot.projectedWorkDistance = v }
         latestSnapshot = pendingSnapshot
-        snapshotContinuation?.yield(pendingSnapshot)
+        snapshotContinuation.yield(pendingSnapshot)
     }
 }
 
@@ -242,7 +286,9 @@ extension RowingCentral: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        if peripheral.identifier == connectedPeripheral?.identifier {
+        peripheral.delegate = self
+
+        if peripheral.identifier == connectedPeripheral?.identifier, connectionState == .connecting {
             connectionTimeoutTask?.cancel()
             connectionTimeoutTask = nil
             if let name = peripheral.name, connectedRowerName == nil || connectedRowerName == "Unknown Rower" {
@@ -250,18 +296,18 @@ extension RowingCentral: CBCentralManagerDelegate {
                 displayName = name
             }
             connectionState = .connected
-            peripheral.delegate = self
             if let proto = connectedProtocolType {
                 discoverServicesForPeripheral(peripheral, protocolType: proto)
             }
-        } else if peripheral.identifier == connectedHRMPeripheral?.identifier {
+        }
+
+        if peripheral.identifier == connectedHRMPeripheral?.identifier, hrmConnectionState == .connecting {
             hrmConnectionTimeoutTask?.cancel()
             hrmConnectionTimeoutTask = nil
             if let name = peripheral.name, connectedHRMName == nil || connectedHRMName == "Unknown Rower" {
                 connectedHRMName = name
             }
             hrmConnectionState = .connected
-            peripheral.delegate = self
             if let proto = connectedHRMProtocolType {
                 discoverServicesForPeripheral(peripheral, protocolType: proto)
             }
@@ -271,7 +317,8 @@ extension RowingCentral: CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: (any Error)?) {
         if peripheral.identifier == connectedPeripheral?.identifier {
             resetErgConnection()
-        } else if peripheral.identifier == connectedHRMPeripheral?.identifier {
+        }
+        if peripheral.identifier == connectedHRMPeripheral?.identifier {
             resetHRMConnection()
         }
     }
@@ -279,7 +326,8 @@ extension RowingCentral: CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: (any Error)?) {
         if peripheral.identifier == connectedPeripheral?.identifier {
             resetErgConnection()
-        } else if peripheral.identifier == connectedHRMPeripheral?.identifier {
+        }
+        if peripheral.identifier == connectedHRMPeripheral?.identifier {
             resetHRMConnection()
         }
     }
@@ -301,19 +349,18 @@ extension RowingCentral: CBPeripheralDelegate {
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: (any Error)?) {
-        guard let data = characteristic.value else { return }
+        guard let data = characteristic.value,
+              let serviceUUID = characteristic.service?.uuid
+        else { return }
 
-        if peripheral.identifier == connectedHRMPeripheral?.identifier {
-            guard let proto = connectedHRMProtocolType,
-                  let handler = ProtocolRegistry.handler(for: proto),
-                  let partial = handler.decode(characteristicUUID: characteristic.uuid.uuidString, data: data)
-            else { return }
+        if let hrmProto = connectedHRMProtocolType,
+           let hrmHandler = ProtocolRegistry.handler(for: hrmProto),
+           serviceUUID == CBUUID(string: hrmHandler.serviceUUID),
+           let partial = hrmHandler.decode(characteristicUUID: characteristic.uuid.uuidString, data: data) {
             latestHRMHeartRate = partial.heartRate
-        } else {
-            guard let proto = connectedProtocolType,
-                  let handler = ProtocolRegistry.handler(for: proto),
-                  let partial = handler.decode(characteristicUUID: characteristic.uuid.uuidString, data: data)
-            else { return }
+        } else if let ergProto = connectedProtocolType,
+                  let ergHandler = ProtocolRegistry.handler(for: ergProto),
+                  let partial = ergHandler.decode(characteristicUUID: characteristic.uuid.uuidString, data: data) {
             mergeSnapshot(partial)
         }
     }
