@@ -2,7 +2,8 @@ import CoreBluetooth
 import RowingProtocols
 
 public struct DiscoveredRower: Identifiable, Sendable {
-    public let id: UUID
+    public let id: String
+    public let peripheralID: UUID
     public let name: String
     public let protocolType: RowingProtocolType
     public let deviceCategory: DeviceCategory
@@ -63,7 +64,7 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
     }
 
     public func connectErg(to rower: DiscoveredRower) {
-        guard let peripheral = discoveredPeripherals[rower.id] else { return }
+        guard let peripheral = discoveredPeripherals[rower.peripheralID] else { return }
         connectedPeripheral = peripheral
         connectionState = .connecting
         connectedProtocolType = rower.protocolType
@@ -75,7 +76,7 @@ public final class RowingCentral: NSObject, RowingDataProvider, @unchecked Senda
     }
 
     public func connectHRM(to rower: DiscoveredRower) {
-        guard let peripheral = discoveredPeripherals[rower.id] else { return }
+        guard let peripheral = discoveredPeripherals[rower.peripheralID] else { return }
         connectedHRMPeripheral = peripheral
         hrmConnectionState = .connecting
         connectedHRMProtocolType = rower.protocolType
@@ -214,26 +215,28 @@ extension RowingCentral: CBCentralManagerDelegate {
         rssi RSSI: NSNumber
     ) {
         let serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
-        guard let handler = serviceUUIDs.lazy.compactMap({ uuid in
+        let matchedHandlers = serviceUUIDs.compactMap { uuid in
             ProtocolRegistry.handler(forServiceUUID: uuid.uuidString)
-        }).first else { return }
-        let protocolType = handler.protocolType
+        }
+        guard !matchedHandlers.isEmpty else { return }
 
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String
             ?? peripheral.name
             ?? "Unknown Rower"
 
-        let rower = DiscoveredRower(
-            id: peripheral.identifier,
-            name: name,
-            protocolType: protocolType,
-            deviceCategory: DeviceCategory(protocolType: protocolType),
-            rssi: RSSI.intValue
-        )
-
         discoveredPeripherals[peripheral.identifier] = peripheral
 
-        if !discoveredRowers.contains(where: { $0.id == rower.id }) {
+        for handler in matchedHandlers {
+            let compositeID = "\(peripheral.identifier.uuidString)-\(handler.protocolType.rawValue)"
+            if discoveredRowers.contains(where: { $0.id == compositeID }) { continue }
+            let rower = DiscoveredRower(
+                id: compositeID,
+                peripheralID: peripheral.identifier,
+                name: name,
+                protocolType: handler.protocolType,
+                deviceCategory: DeviceCategory(protocolType: handler.protocolType),
+                rssi: RSSI.intValue
+            )
             discoveredRowers.append(rower)
         }
     }
