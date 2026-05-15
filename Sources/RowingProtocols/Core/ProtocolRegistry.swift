@@ -2,6 +2,7 @@ public enum ProtocolRegistry: Sendable {
     public static let handlers: [any RowingProtocolHandler] = [
         C2ProtocolHandler(),
         FTMSProtocolHandler(),
+        HRMProtocolHandler(),
     ]
 
     public static func handler(for type: RowingProtocolType) -> (any RowingProtocolHandler)? {

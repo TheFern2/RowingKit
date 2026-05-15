@@ -37,6 +37,7 @@ public enum ErgMachineType: UInt8, Sendable, Codable {
 public enum RowingProtocolType: String, Sendable, Codable {
     case concept2
     case ftms
+    case heartRateMonitor
     case watchCoreMotion
 }
 
